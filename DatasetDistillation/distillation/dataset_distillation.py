@@ -1,15 +1,10 @@
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader, RandomSampler, BatchSampler
+from torch.utils.data import DataLoader
 
 from .weights import create_weights_distribution
 
 from globals import device
-
-
-def get_random_permutation(n_samples, batch_size):
-    permutation = torch.randperm(n_samples)
-    return permutation[:batch_size]
 
 
 def update_weights(model, lr, criterion, batch, target):
@@ -40,13 +35,13 @@ def distill_dataset(model, weights_distribution, weights_batch_size, distilled_d
     lr = torch.tensor(lr0, dtype=torch.float, device=device, requirer_grad=True)
 
     for _ in range(optimization_iterations):
-        sampler = BatchSampler(RandomSampler(dataset), input_data_batch_size)
-        data_loader = DataLoader(dataset, sampler=sampler, batch_size=input_data_batch_size)
+        data_loader = DataLoader(dataset, batch_size=input_data_batch_size, shuffle=True)
         batch = next(iter(data_loader))
         batch_data = batch[:][0]
+        batch_data.requires_grad_(True)
         batch_target = batch[:][1]
 
-        losses = []
+        loss_sum = torch.tensor(0., dtype=torch.float)
         for _ in range(weights_batch_size):
             for p in params:
                 weights_init(tensor=p)
@@ -54,12 +49,9 @@ def distill_dataset(model, weights_distribution, weights_batch_size, distilled_d
             update_weights(model, lr, criterion, batch_data, batch_target)
             model.eval()
             loss = compute_loss_on_real_targets(model, criterion, batch_data, batch_target)
-            losses.append(loss.item())
-        losses_sum = torch.tensor(losses).sum()
-        losses_sum.backward()
-        losses_sum_by_x = distilled_dataset_data.grad
-        losses_sum_by_lr = lr.grad
-        distilled_dataset_data -= step_size*losses_sum_by_x
-        lr -= step_size*losses_sum_by_lr
+            loss_sum.add_(loss)
+        loss_sum.backward()
+        distilled_dataset_data -= step_size*batch_data.grad
+        lr -= step_size*lr.grad
 
     return distilled_dataset_data

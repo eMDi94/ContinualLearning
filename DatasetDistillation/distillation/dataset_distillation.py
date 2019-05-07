@@ -1,6 +1,5 @@
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
 
 from .weights import create_weights_distribution
 
@@ -23,23 +22,22 @@ def compute_loss_on_real_targets(model, criterion, batch, target):
     return loss
 
 
-def distill_dataset(model, weights_distribution, weights_batch_size, distilled_dataset_size, input_data_batch_size,
-                    step_size, optimization_iterations, lr0, dataset, criterion):
+def distill_dataset(model, weights_distribution, weights_batch_size, distilled_dataset_size, step_size,
+                    optimization_iterations, lr0, data_loader, data_size, criterion):
     model.to(device)
-    distilled_dataset_size = (distilled_dataset_size,) + dataset[0].size()[1:]
+    distilled_dataset_size = (distilled_dataset_size,) + data_size
     distilled_dataset_data = torch.randn(distilled_dataset_size, dtype=torch.float, device=device, requires_grad=True)
 
     weights_init = create_weights_distribution(weights_distribution)
     params = model.parameters()
 
     lr = torch.tensor(lr0, dtype=torch.float, device=device, requirer_grad=True)
-
-    for _ in range(optimization_iterations):
-        data_loader = DataLoader(dataset, batch_size=input_data_batch_size, shuffle=True)
-        batch = next(iter(data_loader))
-        batch_data = batch[:][0]
-        batch_data.requires_grad_(True)
-        batch_target = batch[:][1]
+    data_loader_len = len(data_loader)
+    it = None
+    for idx in range(optimization_iterations):
+        if idx % data_loader_len == 0:
+            it = iter(data_loader)
+        batch_data, batch_target = next(it)
 
         loss_sum = torch.tensor(0., dtype=torch.float)
         for _ in range(weights_batch_size):

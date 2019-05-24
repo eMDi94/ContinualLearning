@@ -1,5 +1,20 @@
 import torch
-import torch.optim as optim
+from torch.utils.data import Dataset
+
+
+class iCaRLDataset(Dataset):
+
+    def __init__(self, exemplars, labels):
+        if exemplars.size()[0] != labels.size()[0]:
+            raise ValueError('The number of elements in the set and the label must correspond.')
+        self.exemplars = exemplars
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        return self.exemplars[idx], self.labels[idx]
 
 
 def get_merged_and_counts(values):
@@ -21,7 +36,7 @@ def get_labels(exemplar_sets, training_examples):
     return labels
 
 
-def iCaRL_update_representation(model, training_examples, exemplar_sets):
+def iCaRL_update_representation(model, training_examples, exemplar_sets, training_function):
     """
     iCaRL function to update the representation of new classes
     :param model: The NN
@@ -35,43 +50,12 @@ def iCaRL_update_representation(model, training_examples, exemplar_sets):
     exemplars, exemplars_counts = get_merged_and_counts(exemplar_sets)
     training_set = torch.cat((exemplars, training_exs), dim=0)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    # After this add the new classes to the model
+    model.add_classes(len(training_examples))
+    labels = get_labels(exemplar_sets, training_examples)
 
-    with torch.enable_grad():
-        model.train()
+    dataset = iCaRLDataset(training_set, labels)
 
-        optimizer.zero_grad()
-
-        # After this add the new classes to the model
-        model.add_classes(len(training_examples))
-
-        # Run to obtain the scores for the new classes
-        final_output = model(training_set)
-
-        # Scores of the already known classes
-        output = final_output[:, len(exemplar_sets)]
-
-        # Scores of the new classes
-        new_scores = final_output[:, -len(training_examples):]
-
-        # Compute the loss function
-        # First the distillation term with is simpler
-        distillation_term = torch.mm(output, output.log()) + torch.mm((output - 1).neg(), (output - 1).neg().log())
-
-        # The classification term is a little bit more difficult.
-        labels = get_labels(exemplar_sets, training_examples).to(output.device)
-
-        out = (new_scores - 1).neg().log()
-        mask = torch.zeros_like(out, dtype=torch.long, device=out.device)
-        mask[:, labels - len(exemplar_sets)] = 1
-        out[mask] = new_scores[mask].log()
-        classification_term = torch.sum(out, dim=1)
-
-    # Compute the final loss
-    loss = classification_term + distillation_term
-
-    # Make the backward pass
-    loss.backward()
-    optimizer.step()
+    training_function(dataset, len(exemplar_sets), len(training_examples))
 
     return model

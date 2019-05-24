@@ -1,9 +1,6 @@
 import torch
 
 
-from globals import device
-
-
 def iCaRL_classify(model, input_image, exemplar_sets):
     """
     iCaRL function used for classification
@@ -17,7 +14,7 @@ def iCaRL_classify(model, input_image, exemplar_sets):
     x = x.squeeze(dim=0)
     x = x.view(-1)
     mean_tensor_size = len(exemplar_sets) + x.size()
-    means = torch.zeros(mean_tensor_size, dtype=torch.float64, device=device)
+    means = torch.zeros(mean_tensor_size, dtype=torch.float64, device=input_image.device)
     for idx, ten in enumerate(exemplar_sets):
         mean = ten.mean(dim=0)
         mean = mean.view(-1)

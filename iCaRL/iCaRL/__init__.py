@@ -1,1 +1,1 @@
-from .classification import iCaRL_classify
+from .model import iCaRL

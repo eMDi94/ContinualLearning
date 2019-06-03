@@ -1,53 +1,45 @@
+from __future__ import print_function
+
+from networks import MLP
+from datasets import get_mnist_training_data_loader, get_mnist_validation_data_loader
+from utils import device
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset
-from sklearn.datasets import make_classification, make_regression
-
-from globals import device
-from distillation import ClassificationDistillationModule
 
 
-class MyModule(nn.Module):
+def train_mlp():
+    mlp = MLP(784, 10)
+    mlp = mlp.to(device)
+    optimizer = optim.SGD(mlp.parameters(), lr=0.001)
+    criterion = nn.CrossEntropyLoss()
 
-    def __init__(self, in_features):
-        super().__init__()
-        self.linear1 = nn.Linear(in_features, 10)
-        self.linear2 = nn.Linear(10, 5)
-        self.linear3 = nn.Linear(5, 2)
+    print('Start training...')
+    for idx in range(50):
+        mnist = get_mnist_training_data_loader('./data/', 20)
+        losses = []
+        for batch in mnist:
+            data, labels = batch
+            data = data.to(device)
+            data = data.view(data.size()[0], -1)
+            labels = labels.to(device)
+            optimizer.zero_grad()
+            output = mlp(data)
+            loss = criterion(output, labels)
+            loss.backward()
+            losses.append(loss)
+            optimizer.step()
+        mean_loss = torch.tensor(losses, device=device).mean()
+        print('Iteration ', idx, '. Mean loss: ', mean_loss)
 
-    def forward(self, x):
-        x = F.relu(self.linear1(x))
-        x = F.relu(self.linear2(x))
-        x = F.relu(self.linear3(x))
-        return x
+    print('End training...')
 
-
-class ClassificationDataset(Dataset):
-
-    def __init__(self, features, labels):
-        self.features = features
-        self.labels = labels
-
-    def __getitem__(self, i):
-        return self.features[i], self.labels[i]
-
-    def __len__(self):
-        return self.labels.size()[0]
-
-
-def main():
-    x = torch.randn(10, 5, 3, requires_grad=True)
-    y = torch.randn(10)
-    w = torch.randn(5, 3, requires_grad=True)
-    x_c = x.reshape(10, -1)
-    w_c = w.reshape(-1)
-    out = torch.matmul((x_c ** 2), w_c)
-    l = out.mean()
-    l.backward()
-    print(x_c.grad)
-    print(x.grad)
+    print('Saving state dictionary...')
+    torch.save(mlp.state_dict(), 'mlp_weights')
+    print('Model saved.')
+    print('Done!!')
 
 
-main()
+if __name__ == '__main__':
+    train_mlp()

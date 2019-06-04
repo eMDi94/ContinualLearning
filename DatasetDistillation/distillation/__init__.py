@@ -1,2 +1,1 @@
-from .classification_distillation_trainer import ClassificationDistillationModule
-
+from .classification_distillation_trainer import ClassificationDistillationTrainer

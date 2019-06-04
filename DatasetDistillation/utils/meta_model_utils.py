@@ -33,3 +33,13 @@ class MetaModelUtils:
                         module._parameters[k] = \
                             flat_params[offs:offs+p_flat_shape].view(*p_shape)
                         offs += p_flat_shape
+
+    @staticmethod
+    def get_flat_grads(model_with_grads):
+        grads = []
+        for module in model_with_grads.modules():
+            if module.__class__ in MetaModelUtils.AVAIL_MODULES:
+                grads.append(module.weight.grad.view(-1, 1))
+                if module.bias is not None:
+                    grads.append(module.bias.grad.view(-1, 1))
+        return torch.cat(grads)

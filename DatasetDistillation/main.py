@@ -2,11 +2,13 @@ from __future__ import print_function
 
 from networks import MLP
 from datasets import get_mnist_training_data_loader, get_mnist_validation_data_loader
-from utils import device
+from utils import device, create_weights_init_fn
+from distillation import ClassificationDistillationTrainer
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torchvision.transforms as transforms
 
 
 def train_mlp():
@@ -41,5 +43,23 @@ def train_mlp():
     print('Done!!')
 
 
+def distillation():
+    mlp = MLP(784, 10)
+    init_fn = create_weights_init_fn(torch.nn.init.normal_, mean=0, std=1)
+    loss_fn = torch.nn.CrossEntropyLoss()
+    trainer = ClassificationDistillationTrainer(mlp, 100, (28, 28), init_fn, 0.0001, 10, loss_fn, 0.0001, device)
+
+    mnist = get_mnist_training_data_loader('./data/', 20)
+
+    distilled_images, distilled_labels, _ = trainer.distill_(mnist, 10, 1)
+    distilled_images = list(torch.split(distilled_images, 1, dim=0))
+    distilled_labels = list(torch.split(distilled_labels, 1))
+    to_pil_img = transforms.ToPILImage()
+
+    for img, label in zip(distilled_images, distilled_labels):
+        img = to_pil_img(img)
+        img.save('./output/' + str(label) + '.jpg')
+
+
 if __name__ == '__main__':
-    train_mlp()
+    distillation()

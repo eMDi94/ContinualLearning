@@ -4,7 +4,7 @@ class BaseDistillationTrainer(object):
 
     def __init__(self, model, optimization_iterations, data_size, weights_init_fn, learning_rate, weights_batch_size,
                  loss_fn, alpha, device):
-        self.model = model
+        self.model = model.to(device)
         self.T = optimization_iterations
         self.device = device
         self.weights_init_fn = weights_init_fn
@@ -13,29 +13,29 @@ class BaseDistillationTrainer(object):
         self.data_size = data_size
         self.loss_fn = loss_fn
         self.alpha = alpha
-        self.__distilled_data = None
-        self.__distilled_learning_rate = None
-        self.__distilled_targets = None
+        self._distilled_data = None
+        self._distilled_learning_rate = None
+        self._distilled_targets = None
 
     @property
     def distilled_data(self):
-        if self.__distilled_data is None:
+        if self._distilled_data is None:
             raise ValueError('No distilled data are available.')
-        return self.__distilled_data
+        return self._distilled_data
 
     @property
     def distilled_learning_rate(self):
-        if self.__distilled_learning_rate is None:
+        if self._distilled_learning_rate is None:
             raise ValueError('No distilled learning rate is available.')
-        return self.__distilled_learning_rate
+        return self._distilled_learning_rate
 
     @property
     def distilled_targets(self):
-        if self.__distilled_targets is None:
+        if self._distilled_targets is None:
             raise ValueError('No distilled targets are available.')
-        return self.__distilled_targets
+        return self._distilled_targets
 
-    def __get_next_batch(self, it, loader):
+    def _get_next_batch(self, it, loader):
         try:
             b = next(it)
         except StopIteration:

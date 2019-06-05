@@ -13,9 +13,9 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
                                                                 loss_fn, alpha, device)
         self.__distilled_labels = None
 
-    def distill(self, training_data_loader, n_labels, exemples_per_label):
-        distilled_labels = torch.arange(n_labels).repeat(exemples_per_label).reshape(exemples_per_label, 1)\
-            .transpose(1, 0).reshape(-1)
+    def distill(self, training_data_loader, n_labels, examples_per_label):
+        distilled_labels = torch.arange(n_labels, device=self.device).repeat(examples_per_label)
+        distilled_labels = distilled_labels.reshape(examples_per_label, -1).transpose(1, 0).reshape(-1)
         distilled_data_size = torch.Size([distilled_labels.size(0)]) + torch.Size(self.data_size)
         distilled_data = torch.randn(distilled_data_size, device=self.device, dtype=torch.float)
         eta = torch.tensor([self.eta], device=self.device)
@@ -24,7 +24,7 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
 
         it = iter(training_data_loader)
         for iteration in range(self.T):
-            data, labels = self.__get_next_batch(it, training_data_loader)
+            (data, labels), it = self._get_next_batch(it, training_data_loader)
             data = data.to(self.device)
             labels = labels.to(self.device)
 

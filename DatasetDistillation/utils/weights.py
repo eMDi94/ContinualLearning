@@ -6,6 +6,6 @@ def create_weights_init_fn(init_fn, **kwargs):
         if hasattr(module, 'bias') is True:
             nn.init.constant_(module.bias, 0.)
         if hasattr(module, 'weight') is True:
-            init_fn(module.weights, **kwargs)
+            init_fn(module.weight, **kwargs)
 
     return i_init_fn

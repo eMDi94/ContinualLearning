@@ -2,7 +2,7 @@ from __future__ import print_function
 
 from networks import MLP
 from datasets import get_mnist_training_data_loader, get_mnist_validation_data_loader
-from utils import device, create_weights_init_fn
+from utils import device, create_weights_init_fn, FlatTransform
 from distillation import ClassificationDistillationTrainer
 
 import torch
@@ -43,17 +43,26 @@ def train_mlp():
     print('Done!!')
 
 
+def flat_input(x):
+    return x.view(x.size(0), -1)
+
+
 def distillation():
     mlp = MLP(784, 10)
     init_fn = create_weights_init_fn(torch.nn.init.normal_, mean=0, std=1)
     loss_fn = torch.nn.CrossEntropyLoss()
-    trainer = ClassificationDistillationTrainer(mlp, 100, (28, 28), init_fn, 0.0001, 10, loss_fn, 0.0001, device)
+    trainer = ClassificationDistillationTrainer(mlp, 100, 784, init_fn, 0.0001, 10, loss_fn, 0.0001, device)
 
     mnist = get_mnist_training_data_loader('./data/', 20)
 
-    distilled_images, distilled_labels, _ = trainer.distill_(mnist, 10, 1)
-    distilled_images = list(torch.split(distilled_images, 1, dim=0))
-    distilled_labels = list(torch.split(distilled_labels, 1))
+    mnist.dataset.transform = transforms.Compose([
+        mnist.dataset.transform,
+        FlatTransform()
+    ])
+
+    trainer.distill(mnist, 10, 1)
+    distilled_images = list(torch.split(trainer.distilled_data.view(trainer.distilled_data.size(0), 28, 28), 1))
+    distilled_labels = list(torch.split(trainer.distilled_targets, 1))
     to_pil_img = transforms.ToPILImage()
 
     for img, label in zip(distilled_images, distilled_labels):

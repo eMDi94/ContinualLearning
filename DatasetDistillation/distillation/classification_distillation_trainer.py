@@ -1,4 +1,6 @@
 import torch
+import torch.autograd as autograd
+import torch.optim as optim
 
 from utils import MetaModelUtils
 from .base_distillation_trainer import BaseDistillationTrainer
@@ -11,29 +13,25 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
         super(ClassificationDistillationTrainer, self).__init__(model, optimization_iterations, data_size,
                                                                 weights_init_fn, learning_rate, weights_batch_size,
                                                                 loss_fn, alpha, device)
-        self.__distilled_labels = None
 
     def distill(self, training_data_loader, n_labels, examples_per_label):
         distilled_labels = torch.arange(n_labels, device=self.device).repeat(examples_per_label)
         distilled_labels = distilled_labels.reshape(examples_per_label, -1).transpose(1, 0).reshape(-1)
-        distilled_data_size = torch.Size([distilled_labels.size(0)]) + torch.Size(self.data_size)
-        distilled_data = torch.randn(distilled_data_size, device=self.device, dtype=torch.float)
-        eta = torch.tensor([self.eta], device=self.device)
+        distilled_data_size = torch.Size([distilled_labels.size(0)]) + torch.Size([self.data_size])
+        distilled_data = torch.randn(distilled_data_size, device=self.device, requires_grad=True, dtype=torch.float)
+        eta = torch.tensor([self.eta], device=self.device, requires_grad=True)
 
         self.model.train()
 
         it = iter(training_data_loader)
         for iteration in range(self.T):
+            print('Optimization iteration ', iteration + 1, ' started.')
             (data, labels), it = self._get_next_batch(it, training_data_loader)
             data = data.to(self.device)
             labels = labels.to(self.device)
 
-            # Make distilled_data and eta able to obtain gradient
-            distilled_data.requires_grad_(True)
-            eta.requires_grad_(True)
-
-            distilled_data_grads = []
-            eta_grads = []
+            loss_grad_wrt_distilled_data = torch.zeros_like(distilled_data, device=self.device, dtype=torch.float)
+            loss_grad_wrt_eta = torch.zeros_like(eta, device=self.device, dtype=torch.float)
             for weights_batch_index in range(self.weights_batch_size):
                 # Weights batch init
                 self.model.apply(self.weights_init_fn)
@@ -51,9 +49,9 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
 
                     # Get flat weights and flat grad to perform the update on the weights
                     flat_weights = MetaModelUtils.get_flat_params(self.model)
-                    flat_grads = MetaModelUtils.get_flat_grads(self.model)
-                    flat_grads = self.eta.item() * flat_grads
-                    flat_weights = flat_weights - flat_grads
+                    flat_grads = MetaModelUtils.get_flat_grads(self.model).view(-1)
+                    flat_grads.mul_(eta)
+                    flat_weights.sub_(flat_grads)
                     MetaModelUtils.set_flat_params(self.model, flat_weights)
 
                     # Compute the loss on the training_data
@@ -64,22 +62,37 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
                     # Performing now the backward allows to obtain the gradients of the distilled data
                     # and distilled learning rate. This time is not necessary to set retain_graph=True and
                     # create_graph=True
-                    final_loss.backward()
+                    x_grad, eta_grad = autograd.grad(final_loss, (distilled_data, eta), allow_unused=True)
 
-                    # Save gradients of distilled data and distilled learning rate
-                    distilled_data_grads.append(distilled_data.grad)
-                    eta_grads.append(eta.grad)
+                    # Update the gradients sum
+                    loss_grad_wrt_distilled_data.sub_(x_grad)
+                    loss_grad_wrt_eta.sub_(eta_grad)
 
-            # Set both distilled_data and eta to requires_grad=False
-            distilled_data.requires_grad_(False)
-            eta.requires_grad_(False)
-            distilled_data -= self.alpha * torch.tensor(distilled_data_grads, device=self.device).sum(dim=0)
-            eta -= self.alpha * torch.tensor(eta_grads, device=self.device).sum()
+                    if weights_batch_index % 50 == 0:
+                        print('Working...')
+
+            distilled_data -= self.alpha * loss_grad_wrt_distilled_data
+            eta -= self.alpha * loss_grad_wrt_eta
 
         self.model.eval()
-        self.__distilled_data = distilled_data.detach()
-        self.__distilled_labels = distilled_labels
-        self.__distilled_learning_rate = eta.detach()
+        self._distilled_data = distilled_data.detach()
+        self._distilled_targets = distilled_labels
+        self._distilled_learning_rate = eta.detach()
 
-    def train(self, *args):
-        pass
+    def train(self):
+        if any(var is None for var in [self._distilled_data, self._distilled_targets, self._distilled_learning_rate]):
+            raise RuntimeError('You cannot perform a training without having distilled any data.')
+
+        # As the paper says, the distilled data should be able to reconstruct the network with a single pass of
+        # gradient descent
+
+        self.model.train()
+        self.model.apply(self.weights_init_fn)
+
+        optimizer = optim.SGD(self.model.parameters(), lr=self.distilled_learning_rate.item())
+        optimizer.zero_grad()
+
+        out = self.model(self.distilled_data)
+        loss = self.loss_fn(out, self.distilled_targets)
+        loss.backward()
+        optimizer.step()

@@ -54,17 +54,18 @@ def weights_init(device):
 
 def distillation():
     mlp = MLP(784, 10)
+    net = LeNet()
     init_fn = create_weights_init_fn(torch.nn.init.normal_, mean=0, std=1)
-    loss_fn = torch.nn.CrossEntropyLoss()
-    trainer = ClassificationDistillationTrainer(mlp, 1000, (784,), init_fn, 0.0001, 10, loss_fn, 0.0001, device)
+    loss_fn = torch.nn.NLLLoss()
+    trainer = ClassificationDistillationTrainer(mlp, 100, (784,), init_fn, 0.001, 50, loss_fn, 0.01, device)
 
     mnist = get_mnist_training_data_loader('./data/', 20)
+
 
     mnist.dataset.transform = transforms.Compose([
         mnist.dataset.transform,
         FlatTransform()
     ])
-
 
     trainer.distill(mnist, 10, 1)
     distilled_images = list(torch.split(trainer.distilled_data.view(trainer.distilled_data.size(0), 28, 28), 1))

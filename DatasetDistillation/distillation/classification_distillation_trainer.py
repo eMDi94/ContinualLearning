@@ -33,8 +33,8 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
             loss_grad_wrt_eta = torch.zeros_like(eta, device=self.device, dtype=torch.float)
             for weights_batch_index in range(self.weights_batch_size):
                 # Weights batch init
-                MetaModelUtils.reset(self.model)
                 self.model.apply(self.weights_init_fn)
+                MetaModelUtils.reset(self.model)
 
                 with torch.enable_grad():
                     self.model.zero_grad()
@@ -53,21 +53,24 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
                     flat_grads.mul_(eta)
                     flat_weights.sub_(flat_grads)
                     MetaModelUtils.set_flat_params(self.model, flat_weights)
+                    del flat_weights, flat_grads
 
                     # Compute the loss on the training_data
-                    self.model.zero_grad()
                     out = self.model(data)
                     final_loss = self.loss_fn(out, labels)
 
                     # Performing now the backward allows to obtain the gradients of the distilled data
                     # and distilled learning rate. This time is not necessary to set retain_graph=True and
-                    # create_graph=True
+                    # create_graph=True. allow_unused is necessary to compute the gradient with respect to x and eta
+                    # since they are not directly used during the computation of final loss
                     x_grad, eta_grad = autograd.grad(final_loss, (distilled_data, eta), allow_unused=True,
                                                      retain_graph=False)
 
                     # Update the gradients sum
                     loss_grad_wrt_distilled_data.sub_(x_grad)
                     loss_grad_wrt_eta.sub_(eta_grad)
+
+                    del x_grad, eta_grad
 
                     if weights_batch_index % 50 == 0:
                         print('Working...')

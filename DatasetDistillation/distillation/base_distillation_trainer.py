@@ -1,3 +1,4 @@
+import torch.optim as optim
 
 
 class BaseDistillationTrainer(object):
@@ -46,5 +47,27 @@ class BaseDistillationTrainer(object):
     def distill(self, *args):
         raise NotImplementedError()
 
-    def train(self, *args):
-        raise NotImplementedError()
+    def train(self, optimizer=optim.SGD, optimizer_args=None):
+        if any(var is None for var in [self._distilled_data, self._distilled_targets, self._distilled_learning_rate]):
+            raise RuntimeError('You cannot perform a training without having distilled any data.')
+
+        # As the paper says, only one step of SGD is necessary. Anyway i allow the customization of the optimizer.
+        # The default is the Stochastic Gradient Descent. optimizer_args allows to pass any extra arguments that
+        # the optimizer requires. The learning rate is not allowed since the used lr will be the distilled one.
+        if optim.Optimizer not in optimizer.__bases__:
+            raise ValueError('Optimizer must be a subclass torch.optim.optimizer.Optimizer')
+
+        optimizer_args = optimizer_args if optimizer_args is not None else dict()
+        if not isinstance(optimizer_args, dict):
+            raise ValueError('Only python dictionary are allowed as optimizer_args.')
+        if 'lr' in optimizer_args.keys():
+            raise ValueError("The learning rate is the one distilled. It's not possible to pass it as an argument.")
+
+        self.model.train()
+        op = optimizer(self.model.parameters(), lr=self.distilled_learning_rate, **optimizer_args)
+
+        op.zero_grad()
+        out = self.model(self.distilled_data)
+        loss = self.loss_fn(out, self.distilled_targets)
+        loss.backward()
+        op.step()

@@ -1,6 +1,5 @@
 import torch
 import torch.autograd as autograd
-import torch.optim as optim
 
 from utils import MetaModelUtils
 from .base_distillation_trainer import BaseDistillationTrainer
@@ -78,21 +77,3 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
         self._distilled_data = distilled_data.detach()
         self._distilled_targets = distilled_labels
         self._distilled_learning_rate = eta.detach()
-
-    def train(self):
-        if any(var is None for var in [self._distilled_data, self._distilled_targets, self._distilled_learning_rate]):
-            raise RuntimeError('You cannot perform a training without having distilled any data.')
-
-        # As the paper says, the distilled data should be able to reconstruct the network with a single pass of
-        # gradient descent
-
-        self.model.train()
-        self.model.apply(self.weights_init_fn)
-
-        optimizer = optim.SGD(self.model.parameters(), lr=self.distilled_learning_rate.item())
-        optimizer.zero_grad()
-
-        out = self.model(self.distilled_data)
-        loss = self.loss_fn(out, self.distilled_targets)
-        loss.backward()
-        optimizer.step()

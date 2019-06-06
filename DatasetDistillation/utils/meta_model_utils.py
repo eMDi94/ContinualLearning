@@ -10,6 +10,15 @@ class MetaModelUtils:
     AVAIL_MODULES = [nn.Linear, nn.Conv2d, nn.BatchNorm2d]
 
     @staticmethod
+    def reset(model):
+        """ Breaks history of params. """
+        for module in model.modules():
+            if module.__class__ in MetaModelUtils.AVAIL_MODULES:
+                module.weight = nn.Parameter(module.weight.data)
+                if module.bias is not None:
+                    module.bias = nn.Parameter(module.bias.data)
+
+    @staticmethod
     def get_flat_params(model):
         params = []
         for module in model.modules():

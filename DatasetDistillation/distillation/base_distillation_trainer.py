@@ -1,3 +1,4 @@
+import torch
 import torch.optim as optim
 
 
@@ -17,6 +18,7 @@ class BaseDistillationTrainer(object):
         self._distilled_data = None
         self._distilled_learning_rate = None
         self._distilled_targets = None
+        self.numels = torch.tensor([w.numel() for w in self.model.parameters()], device=self.device).sum().item()
 
     @property
     def distilled_data(self):
@@ -62,6 +64,9 @@ class BaseDistillationTrainer(object):
             raise ValueError('Only python dictionary are allowed as optimizer_args.')
         if 'lr' in optimizer_args.keys():
             raise ValueError("The learning rate is the one distilled. It's not possible to pass it as an argument.")
+
+        self.distilled_data.to(self.device)
+        self.distilled_targets.to(self.device)
 
         self.model.train()
         op = optimizer(self.model.parameters(), lr=self.distilled_learning_rate, **optimizer_args)

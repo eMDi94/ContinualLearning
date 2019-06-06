@@ -16,7 +16,7 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
     def distill(self, training_data_loader, n_labels, examples_per_label):
         distilled_labels = torch.arange(n_labels, device=self.device).repeat(examples_per_label)
         distilled_labels = distilled_labels.reshape(examples_per_label, -1).transpose(1, 0).reshape(-1)
-        distilled_data_size = torch.Size([distilled_labels.size(0)]) + torch.Size([self.data_size])
+        distilled_data_size = distilled_labels.size() + torch.Size(tuple(self.data_size))
         distilled_data = torch.randn(distilled_data_size, device=self.device, requires_grad=True, dtype=torch.float)
         eta = torch.tensor([self.eta], device=self.device, requires_grad=True)
 
@@ -33,6 +33,7 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
             loss_grad_wrt_eta = torch.zeros_like(eta, device=self.device, dtype=torch.float)
             for weights_batch_index in range(self.weights_batch_size):
                 # Weights batch init
+                MetaModelUtils.reset(self.model)
                 self.model.apply(self.weights_init_fn)
 
                 with torch.enable_grad():
@@ -61,7 +62,8 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
                     # Performing now the backward allows to obtain the gradients of the distilled data
                     # and distilled learning rate. This time is not necessary to set retain_graph=True and
                     # create_graph=True
-                    x_grad, eta_grad = autograd.grad(final_loss, (distilled_data, eta), allow_unused=True)
+                    x_grad, eta_grad = autograd.grad(final_loss, (distilled_data, eta), allow_unused=True,
+                                                     retain_graph=False)
 
                     # Update the gradients sum
                     loss_grad_wrt_distilled_data.sub_(x_grad)
@@ -70,10 +72,12 @@ class ClassificationDistillationTrainer(BaseDistillationTrainer):
                     if weights_batch_index % 50 == 0:
                         print('Working...')
 
-            distilled_data -= self.alpha * loss_grad_wrt_distilled_data
-            eta -= self.alpha * loss_grad_wrt_eta
+            with torch.no_grad():
+                distilled_data.sub_(self.alpha * loss_grad_wrt_distilled_data)
+                eta.sub_(self.alpha * loss_grad_wrt_eta)
 
+        print('Distillation ended.')
         self.model.eval()
-        self._distilled_data = distilled_data.detach()
-        self._distilled_targets = distilled_labels
-        self._distilled_learning_rate = eta.detach()
+        self._distilled_data = distilled_data.detach().cpu()
+        self._distilled_targets = distilled_labels.cpu()
+        self._distilled_learning_rate = eta.detach().cpu().item()

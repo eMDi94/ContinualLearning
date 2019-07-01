@@ -76,3 +76,6 @@ class BaseDistillationTrainer(object):
         loss = self.loss_fn(out, self.distilled_targets)
         loss.backward()
         op.step()
+
+    def save_data(self, save_function):
+        save_function(self.distilled_data, self.distilled_targets)

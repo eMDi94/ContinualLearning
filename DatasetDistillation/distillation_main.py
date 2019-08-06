@@ -4,7 +4,7 @@ import os
 from networks import MLP, LeNet
 from datasets import get_mnist_training_data_loader, get_mnist_validation_data_loader
 from utils import device, create_weights_init_fn, FlatTransform
-from distillation import ClassificationDistillationTrainer
+from distillation.distillation_trainer import DistillationTrainer
 
 import torch
 import torchvision.transforms as T
@@ -49,7 +49,7 @@ def distillation():
     init_fn = create_weights_init_fn(torch.nn.init.normal_, mean=0, std=0.1)
     loss_fn = torch.nn.CrossEntropyLoss()
 
-    trainer = ClassificationDistillationTrainer(mlp, 1000, (784,),
+    trainer = DistillationTrainer(mlp, 100, (784,),
                                                 init_fn, 0.01, 100, loss_fn,
                                                 0.001, device)
 
@@ -60,7 +60,7 @@ def distillation():
         FlatTransform(),
     ])
 
-    trainer.distill(mnist, 10, 1)
+    trainer.classification_distillation(mnist, 10, 1)
     if not os.path.isdir('./output'):
         os.mkdir('./output')
 

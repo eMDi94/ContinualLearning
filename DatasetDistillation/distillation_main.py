@@ -34,19 +34,30 @@ def save_lenet_data(distilled_data, distilled_targets):
         img = to_pil_img(img)
         img.save('./output/' + label + '.jpg')
 
+def parse():
+    """
+    todo: argparse
+    :return:
+    """
+    import argparse
+    pass
 
 def distillation():
-    mlp = MLP(784, 10)
-    net = LeNet()
-    init_fn = create_weights_init_fn(torch.nn.init.normal_, mean=0, std=1)
-    loss_fn = torch.nn.CrossEntropyLoss()
-    trainer = ClassificationDistillationTrainer(mlp, 1000, (784,), init_fn, 0.001, 100, loss_fn, 0.0001, device)
 
-    mnist = get_mnist_training_data_loader('./data/', 20)
+    mlp = MLP(784, 10)
+
+    init_fn = create_weights_init_fn(torch.nn.init.normal_, mean=0, std=0.1)
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+    trainer = ClassificationDistillationTrainer(mlp, 1000, (784,),
+                                                init_fn, 0.01, 100, loss_fn,
+                                                0.001, device)
+
+    mnist = get_mnist_training_data_loader('./data/', 64)
 
     mnist.dataset.transform = T.Compose([
         mnist.dataset.transform,
-        FlatTransform()
+        FlatTransform(),
     ])
 
     trainer.distill(mnist, 10, 1)

@@ -3,15 +3,17 @@ import os
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from torch import autograd
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
 import torchvision.transforms as T
 from torchvision.utils import make_grid
 
 from utils.meta_model_utils import MetaModelUtils
 from utils.folder import create_folder_if_not_exists, append_separator_if_needed
+
+from .distillation_dataset import DistillationDataset
 
 
 class DistillationTrainer(object):
@@ -56,32 +58,15 @@ class DistillationTrainer(object):
             raise ValueError('No distilled targets are available.')
         return self._distilled_targets
 
-    def _single_computation(self, data, labels, distilled_data, distilled_labels, eta,
-                            iteration, weight_batch, log_loss_after):
-        flat_weights = torch.empty(self.numels, dtype=torch.float, device=self.device, requires_grad=True)
-        MetaModelUtils.set_flat_params(self.model, flat_weights)
-        self.model.apply(self.weights_init_fn)
-        self.model.zero_grad()
-
-        out = self.model(distilled_data)
-        loss = self.loss_fn(out, distilled_labels)
-
-        (flat_grads, ) = autograd.grad(loss, flat_weights, retain_graph=True, create_graph=True)
-        MetaModelUtils.set_flat_params(self.model, flat_weights - eta * flat_grads)
-
-        out = self.model(data)
-        final_loss = self.loss_fn(out, labels)
-
-        x_grad, eta_grad = autograd.grad(final_loss, (distilled_data, eta), retain_graph=False, create_graph=False)
-
-        current_iteration = iteration * self.weights_batch_size + weight_batch
-        if current_iteration % log_loss_after == 0:
-            self.__summary_writer.add_scalar('Final Loss', final_loss.item(), current_iteration)
-
-        return x_grad, eta_grad
+    def __in_range_0_1(self, tensor):
+        with torch.no_grad():
+            tensor = tensor - tensor.min()
+            tensor = tensor / tensor.max()
+        return tensor
 
     def classification_distillation(self, training_data_loader, n_labels, examples_per_label,
-                                    mean=0.0, std=1.0, save_image_after=50, log_loss_after=10):
+                                    mean=0.0, std=1.0, distilled_data_batch_size=64,
+                                    save_image_after=50, log_loss_after=10):
         if self.__distillation_type is not None and self.__distillation_type == self.CLASSIFICATION_DISTILLATION_TYPE:
             raise ValueError("This distillator has already been used for regression. "
                              "It's not possible to use it for classification now.")
@@ -91,8 +76,17 @@ class DistillationTrainer(object):
         distilled_labels = torch.arange(n_labels, device=self.device).repeat(examples_per_label)
         distilled_labels = distilled_labels.reshape((examples_per_label, -1)).transpose(1, 0).reshape((-1,))
         distilled_data_size = distilled_labels.size() + torch.Size(tuple(self.data_size))
-        distilled_data = torch.empty(distilled_data_size, device=self.device, dtype=torch.float, requires_grad=True)
-        nn.init.normal_(distilled_data, mean, std)
+        distilled_data = torch.empty(distilled_data_size, device=self.device, dtype=torch.float)
+        # nn.init.normal_(distilled_data, mean, std)
+        distilled_data.normal_(mean=mean, std=std)
+        distilled_data = self.__in_range_0_1(distilled_data)
+        # Divide the distilled data and labels in batches
+        distillation_batches = []
+        distillation_data_loader = DataLoader(DistillationDataset(distilled_data, distilled_labels),
+                                              batch_size=distilled_data_batch_size)
+        for data_batch, labels_batch in distillation_data_loader:
+            data_batch.requires_grad_(True)
+            distillation_batches.append((data_batch, labels_batch, torch.zeros_like(data_batch, device=self.device)))
         eta = torch.tensor([self.eta], device=self.device, requires_grad=True)
 
         # Set the model in training mode
@@ -108,28 +102,62 @@ class DistillationTrainer(object):
             # Send the data to the selected device
             data, labels = data.to(self.device), labels.to(self.device)
 
-            loss_grad_wrt_distilled_data = torch.zeros_like(distilled_data, device=self.device, dtype=torch.float)
-            loss_grad_wrt_eta = torch.zeros_like(eta, device=self.device, dtype=torch.float)
-
+            eta_grad_accumulator = torch.zeros_like(eta, device=self.device, dtype=torch.float)
             for weights_batch_index in range(self.weights_batch_size):
+                # x_grad, eta_grad = self.__single_computation(data, labels, distilled_data, distilled_labels, eta,
+                #                                              iteration, weights_batch_index, distilled_data_batch_size,
+                #                                              log_loss_after)
+                # loss_grad_wrt_distilled_data.add_(x_grad)
+                # loss_grad_wrt_eta.add_(eta_grad)
 
-                x_grad, eta_grad = self._single_computation(data, labels, distilled_data, distilled_labels, eta,
-                                                            iteration, weights_batch_index, log_loss_after)
-                loss_grad_wrt_distilled_data.add_(x_grad)
-                loss_grad_wrt_eta.add_(eta_grad)
+                flat_weights = torch.empty(self.numels, dtype=torch.float, device=self.device, requires_grad=True)
+                MetaModelUtils.set_flat_params(self.model, flat_weights)
+                self.model.apply(self.weights_init_fn)
+
+                for data_batch, labels_batch, _ in distillation_batches:
+                    self.model.zero_grad()
+                    out = self.model(data_batch)
+                    loss = self.loss_fn(out, labels_batch)
+
+                    (flat_grads, ) = autograd.grad(loss, flat_weights, retain_graph=True, create_graph=True)
+                    flat_weights = flat_weights - eta * flat_grads
+                    MetaModelUtils.set_flat_params(self.model, flat_weights)
+
+                out = self.model(data)
+                loss = self.loss_fn(out, labels)
+                grads = autograd.grad(loss, [batches[0] for batches in distillation_batches] + [eta])
+                loss.detach()
+
+                if (iteration * self.weights_batch_size + weights_batch_index) % log_loss_after == 0:
+                    self.__summary_writer.add_scalar('Final Loss', loss.item(),
+                                                     iteration * self.weights_batch_size + weights_batch_index)
+
+                eta_grad_accumulator.add_(grads[-1])
+                for i in range(len(grads) - 1):
+                    g = grads[i]
+                    grad_accumulator = distillation_batches[i][-1]
+                    grad_accumulator.add_(g)
 
                 if weights_batch_index % 50 == 0:
                     print('Working...')
 
-            distilled_data.data.add_(-self.alpha * loss_grad_wrt_distilled_data)
-            eta.data.add_(-self.alpha * loss_grad_wrt_eta)
+            eta.data.add_(-self.alpha * eta_grad_accumulator)
+            new_batches = []
+            for data_batch, labels_batch, grad in distillation_batches:
+                data_batch.data.add_(-self.alpha * grad)
+                new_batches.append((data_batch, labels_batch, torch.zeros_like(data_batch, device=self.device)))
+
             if iteration % save_image_after == 0:
-                grid = make_grid(distilled_data, nrow=10)
-                self.__summary_writer.add_image('Distilled Images', grid, iteration)
+                with torch.no_grad():
+                    datas = [d[0] for d in distillation_batches]
+                    datas = torch.cat(datas)
+                    grid = make_grid(datas, 10)
+                    self.__summary_writer.add_image('Distilled Images', grid, iteration)
 
         print('Distillation Ended')
         self.model.eval()
-        self._distilled_data = distilled_data.detach()
+        distilled_data = [d[0].detach() for d in distillation_batches]
+        self._distilled_data = torch.cat(distilled_data)
         self._distilled_targets = distilled_labels.detach()
         self._distilled_learning_rate = eta.detach().item()
 

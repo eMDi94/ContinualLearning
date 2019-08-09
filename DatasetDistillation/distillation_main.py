@@ -22,6 +22,7 @@ def parse():
     return parser.parse_args()
 
 
+
 def distillation():
     net = LeNet()
 
@@ -29,7 +30,7 @@ def distillation():
     loss_fn = torch.nn.CrossEntropyLoss()
 
     args = parse()
-    trainer = DistillationTrainer(net, args.number_of_iterations, (784,),
+    trainer = DistillationTrainer(net, args.number_of_iterations, (1, 28, 28,),
                                   init_fn, args.learning_rate, args.weights_batch_size, loss_fn,
                                   args.alpha, device)
 
@@ -39,7 +40,7 @@ def distillation():
         mnist.dataset.transform,
     ])
 
-    trainer.classification_distillation(mnist, 10, 1)
+    trainer.classification_distillation(mnist, 10, 1, mean=0.1307, std=0.3081, distilled_data_batch_size=5)
     # Once sure that the distillation works I'll test the saving phase
     # trainer.save_distilled_data('./output', save_le_net_img)
 

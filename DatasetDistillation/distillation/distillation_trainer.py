@@ -104,12 +104,6 @@ class DistillationTrainer(object):
 
             eta_grad_accumulator = torch.zeros_like(eta, device=self.device, dtype=torch.float)
             for weights_batch_index in range(self.weights_batch_size):
-                # x_grad, eta_grad = self.__single_computation(data, labels, distilled_data, distilled_labels, eta,
-                #                                              iteration, weights_batch_index, distilled_data_batch_size,
-                #                                              log_loss_after)
-                # loss_grad_wrt_distilled_data.add_(x_grad)
-                # loss_grad_wrt_eta.add_(eta_grad)
-
                 flat_weights = torch.empty(self.numels, dtype=torch.float, device=self.device, requires_grad=True)
                 MetaModelUtils.set_flat_params(self.model, flat_weights)
                 self.model.apply(self.weights_init_fn)
@@ -138,7 +132,7 @@ class DistillationTrainer(object):
                     grad_accumulator = distillation_batches[i][-1]
                     grad_accumulator.add_(g)
 
-                if weights_batch_index % 50 == 0:
+                if (weights_batch_index + 1) % 50 == 0:
                     print('Working...')
 
             eta.data.add_(-self.alpha * eta_grad_accumulator)
@@ -146,6 +140,7 @@ class DistillationTrainer(object):
             for data_batch, labels_batch, grad in distillation_batches:
                 data_batch.data.add_(-self.alpha * grad)
                 new_batches.append((data_batch, labels_batch, torch.zeros_like(data_batch, device=self.device)))
+            distillation_batches = new_batches
 
             if iteration % save_image_after == 0:
                 with torch.no_grad():

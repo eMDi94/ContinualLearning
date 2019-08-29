@@ -64,6 +64,16 @@ class DistillationTrainer(object):
             tensor = tensor / tensor.max()
         return tensor
 
+    def __create_batches(self, distilled_data, distilled_labels, distilled_data_batch_size):
+        distillation_data_loader = DataLoader(DistillationDataset(distilled_data, distilled_labels),
+                                              batch_size=distilled_data_batch_size, shuffle=True)
+        distillation_batches = []
+        for data_batch, labels_batch in distillation_data_loader:
+            data_batch.requires_grad_(True)
+            distillation_batches.append((data_batch, labels_batch, torch.zeros_like(data_batch, device=self.device)))
+
+        return distillation_batches
+
     def classification_distillation(self, training_data_loader, n_labels, examples_per_label,
                                     mean=0.0, std=1.0, distilled_data_batch_size=64,
                                     save_image_after=50, log_loss_after=10):
@@ -81,12 +91,7 @@ class DistillationTrainer(object):
         distilled_data.normal_(mean=mean, std=std)
         distilled_data = self.__in_range_0_1(distilled_data)
         # Divide the distilled data and labels in batches
-        distillation_batches = []
-        distillation_data_loader = DataLoader(DistillationDataset(distilled_data, distilled_labels),
-                                              batch_size=distilled_data_batch_size)
-        for data_batch, labels_batch in distillation_data_loader:
-            data_batch.requires_grad_(True)
-            distillation_batches.append((data_batch, labels_batch, torch.zeros_like(data_batch, device=self.device)))
+        distillation_batches = self.__create_batches(distilled_data, distilled_labels, distilled_data_batch_size)
         eta = torch.tensor([self.eta], device=self.device, requires_grad=True)
 
         # Set the model in training mode
@@ -139,7 +144,9 @@ class DistillationTrainer(object):
             new_batches = []
             for data_batch, labels_batch, grad in distillation_batches:
                 data_batch.data.add_(-self.alpha * grad)
-                new_batches.append((data_batch, labels_batch, torch.zeros_like(data_batch, device=self.device)))
+                # d = self.__in_range_0_1(data_batch)
+                # d.requires_grad_(True)
+                new_batches.append((data_batch, labels_batch, torch.zeros_like(data_batch),))
             distillation_batches = new_batches
 
             if iteration % save_image_after == 0:

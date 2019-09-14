@@ -27,14 +27,21 @@ class DistillationTrainer(object):
     def init_weights(self, mode, weights_init_fn):
         if mode == self.CONSTANT_WEIGHTS_INIT:
             if hasattr(self, 'initial_weights'):
-                return getattr(self, 'initial_weights').clone()
-            else:
+                flat_weights = getattr(self, 'initial_weights').clone()
+                flat_weights.requires_grad_(True)
+                MetaModelUtils.set_flat_params(self.model, flat_weights)
                 self.model.apply(weights_init_fn)
-                flat_weights = MetaModelUtils.get_flat_params(self.model)
+                return flat_weights
+            else:
+                flat_weights = torch.empty(self.numels, device=self.device, dtype=torch.float)
                 setattr(self, 'initial_weights', flat_weights)
-                return flat_weights.clone()
+                flat_weights = flat_weights.clone()
+                flat_weights.requires_grad_(True)
+                MetaModelUtils.set_flat_params(self.model, flat_weights)
+                self.model.apply(weights_init_fn)
+                return flat_weights
         else:
-            raise Exception('Currently only constant mode is supported')
+            raise Exception('Init weights modality not supported')
 
     def log_distilled_data(self, distilled_data, iteration):
         img = make_grid(distilled_data, 10)
@@ -64,7 +71,6 @@ class DistillationTrainer(object):
         # Set the model in train mode
         self.model.train()
 
-        it = cycle(training_data_loader)
         for iteration in range(optimization_iterations):
             print('Optimization iteration ' + str(iteration) + ' started...')
 
@@ -73,8 +79,6 @@ class DistillationTrainer(object):
 
             for weights_batch_number in range(weights_batch_size):
                 flat_weights = self.init_weights(weights_init_type, weights_init_fn)
-                flat_weights.requires_grad_(True)
-                MetaModelUtils.set_flat_params(self.model, flat_weights)
 
                 out = self.model(distilled_data)
                 loss = self.loss_fn(out, distilled_labels)

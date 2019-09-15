@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from distillation.distillation_trainer import DistillationTrainer
 from networks.le_net import LeNet
-from datasets.mnist import get_mnist_training_data_loader
+from datasets.mnist import get_mnist_data_loader
 from utils.weights import create_weights_init_fn
 
 
@@ -28,7 +28,7 @@ def main():
     args = parse()
 
     device = torch.device(args.device)
-    mnist_loader = get_mnist_training_data_loader('./data/', args.training_data_batch_size)
+    mnist_loader = get_mnist_data_loader('./data/', args.training_data_batch_size, training=True)
     network = LeNet()
     loss_fn = nn.CrossEntropyLoss()
     weights_init_fn = create_weights_init_fn(nn.init.normal_, mean=0, std=0.1)

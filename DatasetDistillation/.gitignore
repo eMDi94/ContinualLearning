@@ -1,2 +1,4 @@
-mlp_weights
 output/*
+final.jpg
+initial.jpg
+runs/*

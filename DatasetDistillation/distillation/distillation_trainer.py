@@ -2,6 +2,7 @@ from itertools import cycle
 
 import torch
 import torch.autograd as autograd
+import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
 
@@ -69,7 +70,8 @@ class DistillationTrainer(object):
     def training_batch_distillation(self, optimization_iterations, distilled_data, eta, distilled_labels,
                                     alpha, training_data_loader, n_input_batches, weights_batch_size,
                                     weights_init_type, weights_init_fn, save_data_after, log_loss_after):
-        for iteration in range(optimization_iterations):
+        iteration = 0
+        while iteration < optimization_iterations or eta.item() < 0:
             print('Optimization iteration ' + str(iteration) + ' started...')
 
             distilled_data.requires_grad_(True)
@@ -122,6 +124,7 @@ class DistillationTrainer(object):
             if (iteration + 1) % save_data_after == 0:
                 self.log_distilled_data(distilled_data, iteration + 1)
             self.summary_writer.add_scalar('eta', eta.item(), iteration)
+            iteration = iteration + 1
 
         return distilled_data, distilled_labels, eta
 
@@ -200,6 +203,22 @@ class DistillationTrainer(object):
                                              weights_init_type, weights_init_fn, save_data_after,
                                              log_loss_after)
 
+        # distilled_data, distilled_labels, eta = \
+        #     self.simple_paper_distillation(optimization_iterations, distilled_data, eta, distilled_labels,
+        #                                    alpha, training_data_loader, weights_batch_size,
+        #                                    weights_init_type, weights_init_fn, save_data_after,
+        #                                    log_loss_after)
+
         self.model.eval()
         grid = make_grid(distilled_data.detach().cpu(), 10)
         T.ToPILImage()(grid).save('./final.jpg')
+        return distilled_data.cpu(), distilled_labels.cpu(), eta.cpu()
+
+    def train(self, distilled_data, targets, eta):
+        optimizer = optim.SGD(self.model.parameters(), eta)
+        optimizer.zero_grad()
+
+        out = self.model(distilled_data)
+        loss = self.loss_fn(out, targets)
+        loss.backward()
+        optimizer.step()

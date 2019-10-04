@@ -1,4 +1,5 @@
 output/*
-final.jpg
-initial.jpg
+*final.jpg
+*initial.jpg
 runs/*
+*todo.txt

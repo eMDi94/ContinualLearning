@@ -1,7 +1,9 @@
 {
-  "iterations": 1000,
-  "weights-batch-size": 100,
-  "training-data-batch-size": 50,
-  "learning-rate": 0.01,
-  "alpha": 0.1
+  "--iterations": 500,
+  "--weights-batch-size": 100,
+  "--training-data-batch-size": 50,
+  "--learning-rate": 0.01,
+  "--alpha": 0.1,
+  "--distilled-initialization": "average-real",
+  "--distilled-optimizer": "adagrad"
 }

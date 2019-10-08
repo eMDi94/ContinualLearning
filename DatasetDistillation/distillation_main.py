@@ -21,8 +21,10 @@ def parse_arguments(source=sys.argv):
     parser.add_argument('--training-data-batch-size', type=int)
     parser.add_argument('--learning-rate', type=float)
     parser.add_argument('--alpha', type=float)
+    parser.add_argument('--distilled-initialization', choices=DistillationTrainer.DISTILLED_DATA_INITIALIZATION)
+    parser.add_argument('--distilled-optimizer', choices=DistillationTrainer.OPTIMIZERS)
     parser.add_argument('--log-img-after', type=int, default=10)
-    parser.add_argument('--log-loss-after', type=int, default=10)
+    parser.add_argument('--img-log-directory', default='./log/')
     parser.add_argument('--output-directory', type=str, default='./output/')
     args = parser.parse_args(source)
     return args
@@ -56,10 +58,12 @@ def main():
     network = LeNet()
     loss_fn = nn.CrossEntropyLoss()
     weights_init_fn = create_weights_init_fn(nn.init.xavier_normal_, gain=1.0)
+    create_folder_if_not_exists(args.img_log_directory)
 
-    distillation_trainer = DistillationTrainer(network, device, loss_fn)
+    distillation_trainer = DistillationTrainer(network, device)
     distillation_trainer.distill(args.iterations, args.weights_batch_size, weights_init_fn, mnist_loader,
-                                 10, 3, args.alpha, args.learning_rate, loss_fn)
+                                 10, 3, args.alpha, args.learning_rate, loss_fn, args.distilled_initialization,
+                                 args.distilled_optimizer, log_img_after=args.log_img_after)
     # save_distilled_data(distilled_data, targets, eta, args.output_directory)
 
 

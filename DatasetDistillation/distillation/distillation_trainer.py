@@ -1,5 +1,3 @@
-from itertools import cycle
-
 import torch
 import torch.autograd as autograd
 import torch.optim as optim
@@ -20,13 +18,14 @@ class DistillationTrainer(object):
         'adadelta': optim.Adadelta
     }
     OPTIMIZERS = __OPTIMIZERS.keys()
-    DISTILLED_DATA_INITIALIZATION = ('random-real', 'k-means', 'average-real',)
+    DISTILLED_DATA_INITIALIZATION = ('random-real', 'k-means', 'average-real', 'random',)
 
-    def __init__(self, model, device):
+    def __init__(self, model, device, loss_fn):
         self.model = model
         self.model = self.model.to(device)
         self.device = device
         self.numels = torch.tensor([w.numel() for w in self.model.parameters()], device=self.device).sum().item()
+        self.loss_fn = loss_fn
 
     def save_grid_img(self, tensor, nrow, img_name):
         img = make_grid(tensor.detach().cpu(), nrow)
@@ -67,6 +66,8 @@ class DistillationTrainer(object):
                 loader = DataLoader(TensorDataset(training_data[training_labels == label]),
                                     batch_size=examples_per_label, shuffle=True)
                 distilled_data[distilled_labels == label] = next(iter(loader))[0]
+        elif distilled_init == 'random':
+            distilled_data = torch.randn_like(distilled_data, device=self.device, requires_grad=True, dtype=torch.float)
         else:
             kmeans = KMeans(n_clusters=n_labels)
             t_data = training_data.view(training_data.size(0), -1).cpu().numpy()
@@ -77,60 +78,60 @@ class DistillationTrainer(object):
         distilled_data.requires_grad_(True)
         return distilled_labels, distilled_data, eta
 
-    def distill(self, optimization_iterations, weights_batch_size, weights_init_fn, training_data_loader,
-                n_labels, examples_per_label, alpha, initial_eta, loss_fn, distilled_init, distilled_optimizer_name,
+    def distill(self, optimization_iterations, gd_steps, weights_init_fn, training_data_loader,
+                n_labels, examples_per_label, n_batch, alpha, initial_eta, distilled_init, distilled_optimizer_name,
                 distilled_optimizer_args=None, log_img_after=10, log_directory='./log/'):
         d_opt_args = distilled_optimizer_args if distilled_optimizer_args is not None else {}
         # Create distilled data
-        distilled_labels, distilled_data, eta = self.create_distilled_data(distilled_init, initial_eta,
+        data_steps = []
+        params = []
+        for _ in range(n_batch):
+            distilled_labels, distilled_data, eta = self.create_distilled_data(distilled_init, initial_eta,
                                                                            training_data_loader, n_labels,
                                                                            examples_per_label)
+            data_steps.append((distilled_labels, distilled_data.requires_grad_(True), eta.requires_grad_(True)))
+            params.append(distilled_data)
+            params.append(eta)
+
         # For debug
-        self.save_grid_img(distilled_data, 10, 'initial.jpg')
-        distilled_data.requires_grad_(True)
-        eta = torch.tensor([initial_eta], device=self.device, requires_grad=True, dtype=torch.float)
+        self.save_grid_img(torch.cat([data for (_, data, _) in data_steps]), 10, 'initial.jpg')
 
         # Define the optimizer for the distilled_data
-        optimizer = DistillationTrainer.create_distilled_optimizer((distilled_data, eta), alpha,
-                                                                   distilled_optimizer_name,
-                                                                   d_opt_args)
+        optimizer = DistillationTrainer.create_distilled_optimizer(params, alpha, distilled_optimizer_name, d_opt_args)
 
         # Main cycle
         self.model.train()
-        it = cycle(training_data_loader)
         for iteration in range(optimization_iterations):
-            print('Optimization iteration ' + str(iteration + 1) + ' started...')
+            flat_weights = torch.empty(self.numels, device=self.device, requires_grad=True, dtype=torch.float)
+            MetaModelUtils.set_flat_params(self.model, flat_weights)
+            self.model.apply(weights_init_fn)
+            for it , (data, labels) in enumerate(training_data_loader):
+                if it == 2:
+                    break
+                data, labels = data.to(self.device), labels.to(self.device)
+                for gd_step in range(gd_steps):
+                    for d_labels, d_data, eta in data_steps:
+                        out = self.model(d_data)
+                        loss = self.loss_fn(out, d_labels)
+                        print('Loss on distilled data: ', loss.item())
 
-            data, labels = next(it)
-            data, labels = data.to(self.device), labels.to(self.device)
+                        (gw,) = autograd.grad(loss, flat_weights, retain_graph=True, create_graph=True)
+                        flat_weights = flat_weights - eta * gw
+                        MetaModelUtils.set_flat_params(self.model, flat_weights)
 
-            optimizer.zero_grad()
-            for weight_batch_number in range(weights_batch_size):
-                flat_weights = torch.empty(self.numels, device=self.device, requires_grad=True)
-                MetaModelUtils.set_flat_params(self.model, flat_weights)
-                self.model.apply(weights_init_fn)
-
-                # Compute the output with the distilled data
-                out = self.model(distilled_data)
-                loss = loss_fn(out, distilled_labels)
-                print('Loss on distilled data: ', loss.item())
-
-                # Update the weights
-                (weights_grad, ) = autograd.grad(loss, flat_weights, retain_graph=True, create_graph=True)
-                flat_weights = flat_weights - eta * weights_grad
-                MetaModelUtils.set_flat_params(self.model, flat_weights)
-
-                # Compute the output on the training data
                 out = self.model(data)
-                loss = loss_fn(out, labels)
+                loss = self.loss_fn(out, labels)
                 print('Loss on real data: ', loss.item())
+                for _, d_data, eta in data_steps:
+                    d_grad, eta_grad = autograd.grad(loss, (d_data, eta), retain_graph=True)
+                    d_data.grad = d_grad
+                    eta.grad = eta_grad
+                loss.detach()
 
-                # Accumulate the gradient on distilled data
-                loss.backward()
+                optimizer.step()
 
-            # Perform the step on the distilled data
-            optimizer.step()
-            if (iteration + 1) % log_img_after == 0:
-                self.save_grid_img(distilled_data, 10, log_directory + 'img' + str(iteration) + '.jpg')
-
+        distilled_data = torch.cat([x for (_, x, _) in data_steps])
         self.save_grid_img(distilled_data, 10, 'final.jpg')
+        distilled_labels = torch.cat([labels for (labels, _, _) in data_steps])
+        distilled_data = distilled_data.detach()
+        return distilled_data, distilled_labels

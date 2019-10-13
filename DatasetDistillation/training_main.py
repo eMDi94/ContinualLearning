@@ -69,7 +69,7 @@ def main():
     print('Accuracy without training: ', evaluate(model, mnist, device))
 
     data, targets = data.to(device), targets.to(device)
-    trainer.train(data, targets, eta)
+    trainer.train(data, targets, eta, 10, 50)
 
     print('Accuracy after training: ', evaluate(trainer.model, mnist, device))
 

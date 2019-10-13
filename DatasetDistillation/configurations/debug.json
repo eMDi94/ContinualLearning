@@ -1,9 +1,10 @@
 {
-  "--iterations": 500,
-  "--weights-batch-size": 100,
-  "--training-data-batch-size": 50,
-  "--learning-rate": 0.01,
-  "--alpha": 0.1,
-  "--distilled-initialization": "average-real",
-  "--distilled-optimizer": "adagrad"
+  "iterations": 1,
+  "training-data-batch-size": 1024,
+  "gd-steps": 100,
+  "n-batch": 1,
+  "learning-rate": 0.01,
+  "alpha": 0.1,
+  "distilled-initialization": "average-real",
+  "distilled-optimizer": "adagrad"
 }

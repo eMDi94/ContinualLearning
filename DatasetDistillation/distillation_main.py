@@ -1,46 +1,30 @@
 import argparse
-import sys
 from json_configuration import JsonConfiguration
 
-import numpy as np
 import torch
 import torch.nn as nn
-import torchvision.transforms as T
 
 from distillation.distillation_trainer import DistillationTrainer
 from networks.le_net import LeNet
 from datasets.mnist import get_mnist_data_loader
 from utils.weights import create_weights_init_fn
-from utils.folder import create_folder_if_not_exists, append_separator_if_needed
+from utils.savings import save_distilled_log_data
 
 
 def parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--iterations', type=int)
-    parser.add_argument('--training-data-batch-size', type=int)
-    parser.add_argument('--gd-steps', type=int)
-    parser.add_argument('--n-batch', type=int)
-    parser.add_argument('--learning-rate', type=float)
+    parser.add_argument('--training-data-batch-size', type=int, default=1024)
+    parser.add_argument('--distill-epochs', type=int, default=3)
+    parser.add_argument('--epochs', type=int, default=400)
+    parser.add_argument('--distilled-batches', type=int, default=3)
+    parser.add_argument('--n-classes', type=int)
+    parser.add_argument('--examples-per-class', type=int, default=10)
+    parser.add_argument('--distill-lr', type=float)
     parser.add_argument('--alpha', type=float)
-    parser.add_argument('--distilled-initialization', choices=DistillationTrainer.DISTILLED_DATA_INITIALIZATION)
-    parser.add_argument('--distilled-optimizer', choices=DistillationTrainer.OPTIMIZERS)
-    parser.add_argument('--log-img-after', type=int, default=1)
-    parser.add_argument('--img-log-directory', default='./log/')
-    parser.add_argument('--output-directory', type=str, default='./output/')
+    parser.add_argument('--optimizer-name', type=str, default='adam', choices=DistillationTrainer.OPTIMIZERS)
+    parser.add_argument('--log-img-after', type=int, default=30)
+    parser.add_argument('--log-epoch', type=int, default=1)
     return parser
-
-
-def save_distilled_data(distilled_data, targets, output_directory):
-    create_folder_if_not_exists(append_separator_if_needed(output_directory))
-    labels = torch.unique(targets)
-    pil_t = T.ToPILImage()
-    for label in labels:
-        label_folder = output_directory + str(label.item()) + '/'
-        create_folder_if_not_exists(label_folder)
-        for index, tensor_img in enumerate(distilled_data[targets == label]):
-            img = pil_t(tensor_img)
-            img.save(label_folder + str(index) + '.jpg')
-    # np.savez(append_separator_if_needed(output_directory) + 'lr', eta=eta.item())
 
 
 def main():
@@ -51,14 +35,12 @@ def main():
     network = LeNet()
     loss_fn = nn.CrossEntropyLoss()
     weights_init_fn = create_weights_init_fn(nn.init.xavier_normal_, gain=1.0)
-    create_folder_if_not_exists(args.img_log_directory)
 
     distillation_trainer = DistillationTrainer(network, device, loss_fn)
-    distilled_labels, distilled_data = distillation_trainer.distill(
-        args.iterations, args.gd_steps, weights_init_fn, mnist_loader,
-        10, 1, args.n_batch, args.alpha, args.learning_rate, args.distilled_initialization,
-        args.distilled_optimizer, log_img_after=args.log_img_after)
-    save_distilled_data(distilled_data.cpu(), distilled_labels.cpu(), args.output_directory)
+    distillation_trainer.distill(args.distill_epochs, args.epochs, args.distilled_batches, args.n_classes,
+                                 args.examples_per_class, (1, 28, 28), args.distill_lr, args.optimizer_name, args.alpha,
+                                 mnist_loader, weights_init_fn, save_log_fn=save_distilled_log_data,
+                                 log_img_after=args.log_img_after, log_epoch=args.log_epoch)
 
 
 if __name__ == '__main__':

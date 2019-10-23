@@ -1,10 +1,7 @@
 import torch
 import torch.autograd as autograd
 import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
-from torchvision.utils import make_grid
-import torchvision.transforms as T
-from sklearn.cluster import KMeans
+import torch.nn.functional as F
 
 from utils.meta_model_utils import MetaModelUtils
 
@@ -26,13 +23,12 @@ class DistillationTrainer(object):
         self.device = device
         self.numels = torch.tensor([w.numel() for w in self.model.parameters()], device=self.device).sum().item()
         self.loss_fn = loss_fn
-
-    def save_grid_img(self, tensor, nrow, img_name):
-        img = make_grid(tensor.detach().cpu(), nrow)
-        T.ToPILImage()(img).save(img_name)
+        self.labels = None
 
     @classmethod
     def create_distilled_optimizer(cls, params, lr, opt_name, opt_args):
+        if opt_args is None:
+            opt_args = {}
         if opt_name not in DistillationTrainer.OPTIMIZERS:
             raise ValueError('The given optimizer is not recognized')
         else:
@@ -40,98 +36,160 @@ class DistillationTrainer(object):
             optimizer = optimizer_class(params, lr, **opt_args)
             return optimizer
 
-    def create_distilled_data(self, distilled_init, initial_eta, training_data_loader, n_labels, examples_per_label):
-        if distilled_init not in DistillationTrainer.DISTILLED_DATA_INITIALIZATION:
-            raise ValueError('Initialization of distillation data not recognized')
+    @classmethod
+    def train_loader_generator(cls, epochs, train_loader):
+        for epoch in range(epochs):
+            train_it = iter(train_loader)
+            for iteration, val in enumerate(train_it):
+                yield epoch, iteration, val
 
-        distilled_labels = torch.arange(n_labels, device=self.device).repeat(examples_per_label)
-        training_data = []
-        training_labels = []
-        for data, labels in training_data_loader:
-            training_data.append(data)
-            training_labels.append(labels)
-        training_data = torch.cat(training_data)
-        training_labels = torch.cat(training_labels)
-        training_data, training_labels = training_data.to(self.device), training_labels.to(self.device)
+    @classmethod
+    def get_data_steps(cls, data, labels, distill_epochs, etas):
+        data_label = [dl for _ in range(distill_epochs) for dl in zip(data, labels)]
+        etas = F.softplus(etas).unbind()
 
-        distilled_data = torch.empty(distilled_labels.size(0), *training_data.size()[1:], device=self.device,
-                                     dtype=torch.float)
-        eta = torch.tensor([initial_eta], device=self.device, requires_grad=True, dtype=torch.float)
-        if distilled_init == 'average-real':
-            for label in range(n_labels):
-                m = training_data[training_labels == label].mean(dim=0)
-                distilled_data[distilled_labels == label] = m
-        elif distilled_init == 'random-real':
-            for label in range(n_labels):
-                loader = DataLoader(TensorDataset(training_data[training_labels == label]),
-                                    batch_size=examples_per_label, shuffle=True)
-                distilled_data[distilled_labels == label] = next(iter(loader))[0]
-        elif distilled_init == 'random':
-            distilled_data = torch.randn_like(distilled_data, device=self.device, requires_grad=True, dtype=torch.float)
-        else:
-            kmeans = KMeans(n_clusters=n_labels)
-            t_data = training_data.view(training_data.size(0), -1).cpu().numpy()
-            kmeans.fit_transform(t_data, training_labels.cpu().numpy())
-            for label, center in enumerate(kmeans.cluster_centers_):
-                distilled_data[distilled_labels == label] = torch.from_numpy(center).view(*training_data.size()[1:])\
-                    .to(self.device)
-        distilled_data.requires_grad_(True)
-        return distilled_labels, distilled_data, eta
-
-    def distill(self, optimization_iterations, gd_steps, weights_init_fn, training_data_loader,
-                n_labels, examples_per_label, n_batch, alpha, initial_eta, distilled_init, distilled_optimizer_name,
-                distilled_optimizer_args=None, log_img_after=10, log_directory='./log/'):
-        d_opt_args = distilled_optimizer_args if distilled_optimizer_args is not None else {}
-        # Create distilled data
         data_steps = []
-        params = []
-        for _ in range(n_batch):
-            distilled_labels, distilled_data, eta = self.create_distilled_data(distilled_init, initial_eta,
-                                                                           training_data_loader, n_labels,
-                                                                           examples_per_label)
-            data_steps.append((distilled_labels, distilled_data.requires_grad_(True), eta.requires_grad_(True)))
-            params.append(distilled_data)
-            params.append(eta)
+        for (distilled_data, distilled_labels), eta in zip(data_label, etas):
+            data_steps.append((distilled_data, distilled_labels, eta))
 
-        # For debug
-        self.save_grid_img(torch.cat([data for (_, data, _) in data_steps]), 10, 'initial.jpg')
+        return data_steps
 
-        # Define the optimizer for the distilled_data
-        optimizer = DistillationTrainer.create_distilled_optimizer(params, alpha, distilled_optimizer_name, d_opt_args)
+    def forward(self, real_data, real_labels, data_steps):
+        flat_weights = MetaModelUtils.get_flat_params(self.model)
+        flat_weights.requires_grad_(True)
+        weights_params = [flat_weights]
+        gradient_weights_params = []
 
-        # Main cycle
         self.model.train()
-        for iteration in range(optimization_iterations):
-            flat_weights = torch.empty(self.numels, device=self.device, requires_grad=True, dtype=torch.float)
+        for iteration, (distilled_data, distilled_labels, eta) in enumerate(data_steps):
             MetaModelUtils.set_flat_params(self.model, flat_weights)
+            out = self.model(distilled_data)
+            loss = self.loss_fn(out, distilled_labels)
+            print('Loss on distilled data: ', loss.item())
+            (grad_weights,) = autograd.grad(loss, flat_weights, eta, create_graph=True)
+
+            with torch.no_grad():
+                new_flat_weights = flat_weights.sub(grad_weights).requires_grad_(True)
+                weights_params.append(new_flat_weights)
+                gradient_weights_params.append(grad_weights)
+                flat_weights = new_flat_weights
+
+        MetaModelUtils.set_flat_params(self.model, weights_params[-1])
+        self.model.eval()
+        out = self.model(real_data)
+        final_loss = self.loss_fn(out, real_labels)
+        print('Loss on real data: ', final_loss.item())
+        return final_loss, weights_params, gradient_weights_params
+
+    def initialize_data_and_optimizer(self, n_distilled_batches, epochs, n_classes, examples_per_class, data_size,
+                                      initial_eta, optimizer_name, alpha, optimizer_kwargs):
+        optimizer_params = []
+
+        labels = []
+        distilled_labels = torch.arange(n_classes, dtype=torch.long, device=self.device)\
+            .repeat(examples_per_class, 1)
+        distilled_labels = distilled_labels.t().reshape(-1)
+        for _ in range(n_distilled_batches):
+            labels.append(distilled_labels)
+        self.labels = torch.cat(labels)
+
+        data = []
+        for _ in range(n_distilled_batches):
+            distilled_data = torch.randn(n_classes * examples_per_class, *data_size, device=self.device, dtype=torch.float,
+                                         requires_grad=True)
+            data.append(distilled_data)
+            optimizer_params.append(distilled_data)
+
+        eta = torch.tensor(initial_eta, device=self.device)
+        eta = eta.repeat(n_distilled_batches * epochs, 1)
+        eta = eta.expm1_().log_().requires_grad_(True)
+        optimizer_params.append(eta)
+
+        optimizer = DistillationTrainer.create_distilled_optimizer(optimizer_params, alpha, optimizer_name, optimizer_kwargs)
+        return data, labels, eta, optimizer
+
+    def backward(self, data_steps, infos_for_backward):
+        # Notation:
+        # - L is the loss w.r.t. the real data
+        # - l is the loss w.r.t. the distilled data
+
+        loss, weights, grad_weights = infos_for_backward
+
+        data = []
+        gradient_data = []
+        etas = []
+        gradient_etas = []
+
+        # Gradient of the loss on real data w.r.t. the last weights
+        (dLdw,) = autograd.grad(loss, (weights[-1],))
+
+        # Set the model in train mode for the backward
+        self.model.train()
+        for (distilled_data, _, eta), weight, grad_weight in reversed(list(zip(data_steps, weights, grad_weights))):
+            hessian_in = []
+            hessian_in.append(weight)
+            hessian_in.append(distilled_data)
+            hessian_in.append(eta)
+            dgw = dLdw.neg()
+            hessian_out = autograd.grad(outputs=(grad_weight,),
+                                        inputs=hessian_in,
+                                        grad_outputs=(dgw,))
+            with torch.no_grad():
+                data.append(distilled_data)
+                gradient_data.append(hessian_out[1])
+                etas.append(eta)
+                gradient_etas.append(hessian_out[2])
+
+                dLdw.add_(hessian_out[0])
+
+        return data, gradient_data, etas, gradient_etas
+
+    def accumulate_gradients(self, grad_infos):
+        distilled_data, grad_data, etas, grad_etas = grad_infos
+        bwd_out = list(etas)
+        bwd_in = list(grad_etas)
+        for data, g_data in zip(distilled_data, grad_data):
+            data.grad.add_(g_data)
+        if len(bwd_out) > 0:
+            autograd.backward(bwd_out, bwd_in)
+
+    def distill(self, distill_epochs, epochs, n_distilled_batches, n_classes, examples_per_class, data_size, initial_eta,
+                optimizer_name, alpha, train_loader, weights_init_fn, optimizer_kwargs=None, save_log_fn=None,
+                log_img_after=30, log_epoch=5):
+        distilled_data, distilled_labels, etas, optimizer = \
+            self.initialize_data_and_optimizer(n_distilled_batches, epochs, n_classes, examples_per_class, data_size,
+                                               initial_eta, optimizer_name, alpha, optimizer_kwargs)
+
+        # Since PyTorch does not create the grad tensor, I have to do it manually
+        for data in distilled_data:
+            data.grad = torch.zeros_like(data, device=self.device, dtype=data.dtype)
+
+        for epoch, iteration, (real_data, real_labels) in DistillationTrainer.train_loader_generator(distill_epochs, train_loader):
+            print('Epoch: ', epoch, ' Iteration: ', iteration, ' started')
+            if (epoch % log_epoch == 0) and (iteration % log_img_after == 0):
+                self.save_log_distilled_data(epoch, iteration, 'start', save_log_fn, distilled_data, distilled_labels)
+            optimizer.zero_grad()
+            real_data, real_labels = real_data.to(self.device), real_labels.to(self.device)
+
+            data_steps = DistillationTrainer.get_data_steps(distilled_data, distilled_labels, epochs, etas)
+
             self.model.apply(weights_init_fn)
-            for it , (data, labels) in enumerate(training_data_loader):
-                if it == 2:
-                    break
-                data, labels = data.to(self.device), labels.to(self.device)
-                for gd_step in range(gd_steps):
-                    for d_labels, d_data, eta in data_steps:
-                        out = self.model(d_data)
-                        loss = self.loss_fn(out, d_labels)
-                        print('Loss on distilled data: ', loss.item())
+            saved_infos = self.forward(real_data, real_labels, data_steps)
+            grad_infos = self.backward(data_steps, saved_infos)
+            self.accumulate_gradients(grad_infos)
 
-                        (gw,) = autograd.grad(loss, flat_weights, retain_graph=True, create_graph=True)
-                        flat_weights = flat_weights - eta * gw
-                        MetaModelUtils.set_flat_params(self.model, flat_weights)
+            optimizer.step()
+            if (epoch % log_epoch == 0) and (iteration % log_img_after == 0):
+                self.save_log_distilled_data(epoch, iteration, 'end', save_log_fn, distilled_data, distilled_labels)
+            del data_steps, grad_infos
 
-                out = self.model(data)
-                loss = self.loss_fn(out, labels)
-                print('Loss on real data: ', loss.item())
-                for _, d_data, eta in data_steps:
-                    d_grad, eta_grad = autograd.grad(loss, (d_data, eta), retain_graph=True)
-                    d_data.grad = d_grad
-                    eta.grad = eta_grad
-                loss.detach()
+        self.save_log_distilled_data('end', 'end', 'end', save_log_fn, distilled_data, distilled_labels)
+        data_steps = DistillationTrainer.get_data_steps(distilled_data, distilled_labels, epochs, etas)
+        data_steps = [(d.detach(), l.detach(), eta.detach()) for (d, l, eta) in data_steps]
+        return data_steps
 
-                optimizer.step()
-
-        distilled_data = torch.cat([x for (_, x, _) in data_steps])
-        self.save_grid_img(distilled_data, 10, 'final.jpg')
-        distilled_labels = torch.cat([labels for (labels, _, _) in data_steps])
-        distilled_data = distilled_data.detach()
-        return distilled_data, distilled_labels
+    def save_log_distilled_data(self, epoch, iteration, sub, save_function, distilled_data, distilled_labels):
+        distilled_data = torch.cat([d.detach().cpu() for d in distilled_data])
+        distilled_labels = torch.cat([l.detach().cpu() for l in distilled_labels])
+        save_function(distilled_data, distilled_labels,
+                      './log/epoch' + str(epoch) + '/iteration' + str(iteration) + '/' + str(sub) + '/')

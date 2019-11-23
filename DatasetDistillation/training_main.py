@@ -14,7 +14,7 @@ def main():
     args = parser.parse_args()
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    net = LeNet()
+    net = LeNet(1, 28, 10)
     net.to(device)
 
     training_data = torch.load(args.training_set)

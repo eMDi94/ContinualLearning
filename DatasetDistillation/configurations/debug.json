@@ -1,7 +1,7 @@
 {
-  "distill-epochs": 5,
+  "distill-epochs": 10,
   "epochs": 400,
-  "distilled-batches": 2,
+  "distilled-batches": 3,
   "n-classes": 10,
   "examples-per-class": 2,
   "distill-lr": 0.01,

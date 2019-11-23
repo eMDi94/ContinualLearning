@@ -1,77 +1,57 @@
-import argparse
-import os
-import glob
-
-import numpy as np
 import torch
-import torchvision.transforms as T
-
-from PIL import Image
+import torch.nn as nn
+import torch.autograd as autograd
 
 from networks.le_net import LeNet
-from distillation.distillation_trainer import DistillationTrainer
 from datasets.mnist import get_mnist_data_loader
-
-
-def parse():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--device', default='cuda:0')
-    parser.add_argument('--input-directory', type=str)
-    parser.add_argument('--validation-batch-size', default=20)
-    args = parser.parse_args()
-    return args
-
-
-def evaluate(model, training_data_loader, device):
-    it = iter(training_data_loader)
-
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for images, labels in it:
-            images, labels = images.to(device), labels.to(device)
-            out = model(images)
-            _, predicted = torch.max(out.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-    return 100 * correct / total
+from parsers import training_parser
+from utils.meta_model_utils import MetaModelUtils
+from utils.weights import create_weights_init_fn
 
 
 def main():
-    args = parse()
-    model = LeNet()
+    parser = training_parser()
+    args = parser.parse_args()
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    device = torch.device(args.device)
-    loss_fn = torch.nn.CrossEntropyLoss()
-    trainer = DistillationTrainer(model, device, loss_fn)
+    net = LeNet()
+    net.to(device)
 
-    targets = torch.tensor([], dtype=torch.long)
-    data = torch.empty((0, 1, 28, 28), dtype=torch.float)
-    to_tensor = T.ToTensor()
-    for label_directory in os.listdir(args.input_directory):
-        if label_directory == 'lr.npz':
-            continue
-        label = int(label_directory)
-        g = glob.glob(args.input_directory + '/' + label_directory + '/*.jpg')
-        labels = torch.tensor([label], dtype=torch.long).repeat(len(g))
-        targets = torch.cat([targets, labels])
-        for img_name in g:
-            img = Image.open(img_name)
-            t_img = to_tensor(img)
-            data = torch.cat([data, t_img.unsqueeze(0)], dim=0)
+    training_data = torch.load(args.training_set)
 
-    with np.load(args.input_directory + '/lr.npz') as file_data:
-        eta = torch.from_numpy(file_data['eta'])
+    init_weights_fn = create_weights_init_fn(nn.init.xavier_normal_, gain=1.0)
+    net.apply(init_weights_fn)
+    weights = MetaModelUtils.get_flat_params(net)
+    loss_fn = nn.CrossEntropyLoss()
 
-    mnist = get_mnist_data_loader('./data', args.validation_batch_size, False)
+    net.train()
+    for data, label, lr in training_data:
+        MetaModelUtils.set_flat_params(net, weights)
+        data, label, lr = data.to(device), label.to(device), lr.to(device)
+        out = net(data)
+        loss = loss_fn(out, label)
+        print('Loss: ', loss.item())
 
-    # Accuracy without training
-    print('Accuracy without training: ', evaluate(model, mnist, device))
+        (flat_grad,) = autograd.grad(loss, weights, grad_outputs=(lr,))
+        weights = weights - flat_grad
 
-    data, targets = data.to(device), targets.to(device)
-    trainer.train(data, targets, eta, 10, 50)
+    test_loader = get_mnist_data_loader('./data/', 1024, False)
+    net.eval()
+    accuracy_sum = 0.
+    it = iter(test_loader)
+    n = len(test_loader)
 
-    print('Accuracy after training: ', evaluate(trainer.model, mnist, device))
+    with torch.no_grad():
+        for data, label in it:
+            data, label = data.to(device), label.to(device)
+            out = net(data)
+            _, predictions = torch.max(out, dim=1)
+            c = (predictions == label)
+            c = c.sum()
+            c = c.item() / out.size(0)
+            accuracy_sum += c
+
+    print('Mean accuracy is: ', (accuracy_sum / n))
 
 
 if __name__ == '__main__':

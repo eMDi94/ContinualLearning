@@ -15,14 +15,14 @@ class DistillationTrainer(object):
         'adadelta': optim.Adadelta
     }
     OPTIMIZERS = __OPTIMIZERS.keys()
-    DISTILLED_DATA_INITIALIZATION = ('random-real', 'k-means', 'average-real', 'random',)
 
-    def __init__(self, model, device, loss_fn):
-        self.model = model
-        self.model = self.model.to(device)
+    def __init__(self, models, device, loss_fn):
+        self.models = models
+        for model in self.models:
+            model.to(device)
         self.device = device
-        self.numels = torch.tensor([w.numel() for w in self.model.parameters()], device=self.device).sum().item()
         self.loss_fn = loss_fn
+        self.distilled_data = None
         self.labels = None
 
     @classmethod
@@ -35,13 +35,6 @@ class DistillationTrainer(object):
             optimizer_class = DistillationTrainer.__OPTIMIZERS[opt_name]
             optimizer = optimizer_class(params, lr, **opt_args)
             return optimizer
-
-    @classmethod
-    def train_loader_generator(cls, epochs, train_loader):
-        for epoch in range(epochs):
-            train_it = iter(train_loader)
-            for iteration, val in enumerate(train_it):
-                yield epoch, iteration, val
 
     @classmethod
     def get_data_steps(cls, data, labels, distill_epochs, etas):
@@ -164,24 +157,25 @@ class DistillationTrainer(object):
         for data in distilled_data:
             data.grad = torch.zeros_like(data, device=self.device, dtype=data.dtype)
 
-        for epoch, iteration, (real_data, real_labels) in DistillationTrainer.train_loader_generator(distill_epochs, train_loader):
-            print('Epoch: ', epoch, ' Iteration: ', iteration, ' started')
-            if (epoch % log_epoch == 0) and (iteration % log_img_after == 0):
-                self.save_log_distilled_data(epoch, iteration, 'start', save_log_fn, distilled_data, distilled_labels)
-            optimizer.zero_grad()
-            real_data, real_labels = real_data.to(self.device), real_labels.to(self.device)
+        for epoch in range(distill_epochs):
+            for iteration, (real_data, real_labels) in enumerate(iter(train_loader)):
+                print('Epoch: ', epoch, ' Iteration: ', iteration, ' started')
+                if (epoch % log_epoch == 0) and (iteration % log_img_after == 0):
+                    self.save_log_distilled_data(epoch, iteration, 'start', save_log_fn, distilled_data, distilled_labels)
+                optimizer.zero_grad()
+                real_data, real_labels = real_data.to(self.device), real_labels.to(self.device)
 
-            data_steps = DistillationTrainer.get_data_steps(distilled_data, distilled_labels, epochs, etas)
+                data_steps = DistillationTrainer.get_data_steps(distilled_data, distilled_labels, epochs, etas)
 
-            self.model.apply(weights_init_fn)
-            saved_infos = self.forward(real_data, real_labels, data_steps)
-            grad_infos = self.backward(data_steps, saved_infos)
-            self.accumulate_gradients(grad_infos)
+                self.model.apply(weights_init_fn)
+                saved_infos = self.forward(real_data, real_labels, data_steps)
+                grad_infos = self.backward(data_steps, saved_infos)
+                self.accumulate_gradients(grad_infos)
 
-            optimizer.step()
-            if (epoch % log_epoch == 0) and (iteration % log_img_after == 0):
-                self.save_log_distilled_data(epoch, iteration, 'end', save_log_fn, distilled_data, distilled_labels)
-            del data_steps, grad_infos
+                optimizer.step()
+                if (epoch % log_epoch == 0) and (iteration % log_img_after == 0):
+                    self.save_log_distilled_data(epoch, iteration, 'end', save_log_fn, distilled_data, distilled_labels)
+                del data_steps, grad_infos
 
         self.save_log_distilled_data('end', 'end', 'end', save_log_fn, distilled_data, distilled_labels)
         data_steps = DistillationTrainer.get_data_steps(distilled_data, distilled_labels, epochs, etas)

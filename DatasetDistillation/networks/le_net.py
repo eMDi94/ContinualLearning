@@ -4,9 +4,9 @@ import torch.nn.functional as F
 
 class LeNet(nn.Module):
 
-    def __init__(self, input_channels, input_size, num_classes):
+    def __init__(self, input_channels, input_dims, num_classes):
         super(LeNet, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, 6, 5, padding=2 if input_size == 28 else 0)
+        self.conv1 = nn.Conv2d(input_channels, 6, 5, padding=2 if input_dims == 28 else 0)
         self.conv2 = nn.Conv2d(6, 16, 5)
         self.fc1 = nn.Linear(16 * 5 * 5, 120)
         self.fc2 = nn.Linear(120, 84)

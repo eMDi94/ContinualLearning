@@ -5,3 +5,4 @@ runs/*
 log/*
 *todo.txt
 jobfile
+networks/weights/
